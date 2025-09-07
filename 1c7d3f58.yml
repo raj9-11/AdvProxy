@@ -1,0 +1,852 @@
+name: Build Header Proxy Player with FFmpeg
+
+on:
+  push:
+    branches: [ "main", "develop" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  generate-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate Project Structure
+        run: |
+          mkdir -p app/src/main/java/com/example/headerproxyplayer/ui
+          mkdir -p app/src/main/java/com/example/headerproxyplayer/proxy
+          mkdir -p app/src/main/java/com/example/headerproxyplayer/audio
+          mkdir -p app/src/main/res/{values,drawable,mipmap-anydpi-v26,xml,layout}
+          mkdir -p app/src/main/assets
+
+      - name: Create gradle.properties
+        run: |
+          cat > gradle.properties << 'EOF'
+          org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.enableJetifier=true
+          kotlin.code.style=official
+          android.nonTransitiveRClass=false
+          EOF
+
+      - name: Create root build.gradle.kts
+        run: |
+          cat > build.gradle.kts << 'EOF'
+          plugins {
+              id("com.android.application") version "8.4.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+
+      - name: Create settings.gradle.kts
+        run: |
+          cat > settings.gradle.kts << 'EOF'
+          pluginManagement {
+              repositories { gradlePluginPortal(); google(); mavenCentral() }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "HeaderProxyPlayer"
+          include(":app")
+          EOF
+
+      - name: Create app/build.gradle.kts with FFmpeg
+        run: |
+          cat > app/build.gradle.kts << 'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.example.headerproxyplayer"
+                  minSdk = 24  // FFmpeg-Kit requires API 24+
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+                  ndk { abiFilters += listOf("armeabi-v7a","arm64-v8a") }
+              }
+              buildTypes {
+                  debug {
+                      isMinifyEnabled = false
+                      isDebuggable = true
+                      applicationIdSuffix = ".debug"
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+              packaging { 
+                  resources { 
+                      excludes += "/META-INF/{AL2.0,LGPL2.1}"
+                      // FFmpeg-Kit specific exclusions
+                      excludes += "META-INF/DEPENDENCIES"
+                      excludes += "META-INF/LICENSE*"
+                      excludes += "META-INF/NOTICE*"
+                  }
+              }
+              buildFeatures {
+                  viewBinding = true
+              }
+          }
+
+          dependencies {
+              // Core dependencies
+              implementation("com.squareup.okhttp3:okhttp:4.12.0")
+              implementation("org.nanohttpd:nanohttpd:2.3.1")
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.appcompat:appcompat:1.7.0")
+              implementation("androidx.activity:activity-ktx:1.9.2")
+              implementation("androidx.lifecycle:lifecycle-service:2.8.6")
+              implementation("androidx.webkit:webkit:1.10.0")
+              implementation("org.json:json:20230227")
+              
+              // FFmpeg for audio transcoding
+              implementation("com.arthenica:ffmpeg-kit-full:6.0-2")
+              
+              // UI for settings
+              implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+              implementation("com.google.android.material:material:1.12.0")
+              implementation("androidx.preference:preference-ktx:1.2.1")
+          }
+          EOF
+
+      - name: Create AndroidManifest.xml with settings activity
+        run: |
+          cat > app/src/main/AndroidManifest.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.INTERNET"/>
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+            <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+            <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+
+            <application
+                android:allowBackup="true"
+                android:usesCleartextTraffic="true"
+                android:icon="@mipmap/ic_launcher"
+                android:label="Header Proxy Player"
+                android:roundIcon="@mipmap/ic_launcher_round"
+                android:supportsRtl="true"
+                android:theme="@style/Theme.AppCompat.DayNight">
+              
+              <!-- Settings Activity -->
+              <activity 
+                  android:name=".ui.SettingsActivity"
+                  android:exported="true"
+                  android:label="Header Proxy Settings">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.LAUNCHER"/>
+                </intent-filter>
+              </activity>
+              
+              <!-- Main proxy handler -->
+              <activity android:name=".ui.MainActivity" android:exported="true" android:noHistory="true">
+                <intent-filter android:priority="1">
+                  <action android:name="android.intent.action.VIEW"/>
+                  <category android:name="android.intent.category.DEFAULT"/>
+                  <category android:name="android.intent.category.BROWSABLE"/>
+                  <data android:scheme="http"/>
+                  <data android:scheme="https"/>
+                  <data android:mimeType="video/*"/>
+                </intent-filter>
+                <intent-filter android:priority="1">
+                  <action android:name="android.intent.action.VIEW"/>
+                  <category android:name="android.intent.category.DEFAULT"/>
+                  <category android:name="android.intent.category.BROWSABLE"/>
+                  <data android:scheme="http"/>
+                  <data android:scheme="https"/>
+                  <data android:pathPattern=".*\\.m3u8"/>
+                </intent-filter>
+              </activity>
+              
+              <service
+                  android:name=".proxy.ProxyService"
+                  android:exported="false"
+                  android:foregroundServiceType="mediaPlayback"/>
+            </application>
+          </manifest>
+          EOF
+
+      - name: Create MainActivity.kt
+        run: |
+          cat > app/src/main/java/com/example/headerproxyplayer/ui/MainActivity.kt << 'EOF'
+          package com.example.headerproxyplayer.ui
+          import android.content.Intent
+          import android.net.Uri
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.core.content.ContextCompat
+          import androidx.lifecycle.lifecycleScope
+          import kotlinx.coroutines.delay
+          import kotlinx.coroutines.launch
+          import com.example.headerproxyplayer.proxy.ProxyService
+
+          class MainActivity : ComponentActivity() {
+            override fun onCreate(savedInstanceState: Bundle?) {
+              super.onCreate(savedInstanceState)
+              val uri = intent?.data ?: run{ finish(); return }
+              
+              ContextCompat.startForegroundService(this,
+                Intent(this, ProxyService::class.java).putExtra(ProxyService.EXTRA_UPSTREAM_URL, uri.toString())
+              )
+              
+              lifecycleScope.launch {
+                delay(2000) // Wait longer for FFmpeg setup
+                ProxyService.getLocalUrl()?.let { url ->
+                  startActivity(Intent.createChooser(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(url)).setDataAndType(Uri.parse(url), "video/*"),
+                    "Play with"
+                  ))
+                }
+                finish()
+              }
+            }
+          }
+          EOF
+
+      - name: Create SettingsActivity.kt
+        run: |
+          cat > app/src/main/java/com/example/headerproxyplayer/ui/SettingsActivity.kt << 'EOF'
+          package com.example.headerproxyplayer.ui
+          import android.content.Context
+          import android.content.SharedPreferences
+          import android.os.Bundle
+          import android.widget.*
+          import androidx.appcompat.app.AppCompatActivity
+          import com.example.headerproxyplayer.R
+
+          class SettingsActivity : AppCompatActivity() {
+            private lateinit var prefs: SharedPreferences
+            
+            override fun onCreate(savedInstanceState: Bundle?) {
+              super.onCreate(savedInstanceState)
+              setContentView(R.layout.activity_settings)
+              prefs = getSharedPreferences("proxy_settings", Context.MODE_PRIVATE)
+              
+              setupUI()
+            }
+            
+            private fun setupUI() {
+              val transcodingEnabled = findViewById<Switch>(R.id.switch_transcoding)
+              val bitrateSpinner = findViewById<Spinner>(R.id.spinner_bitrate)
+              val channelsSpinner = findViewById<Spinner>(R.id.spinner_channels)
+              val statusText = findViewById<TextView>(R.id.text_status)
+              
+              // Load current settings
+              transcodingEnabled.isChecked = prefs.getBoolean("transcoding_enabled", true)
+              
+              // Bitrate options
+              val bitrates = arrayOf("384k", "448k", "640k", "768k")
+              bitrateSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, bitrates)
+              val currentBitrate = prefs.getString("ac3_bitrate", "640k")
+              bitrateSpinner.setSelection(bitrates.indexOf(currentBitrate))
+              
+              // Channel options  
+              val channels = arrayOf("2 (Stereo)", "6 (5.1 Surround)")
+              channelsSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, channels)
+              val currentChannels = prefs.getInt("ac3_channels", 6)
+              channelsSpinner.setSelection(if(currentChannels == 6) 1 else 0)
+              
+              // Save settings on change
+              transcodingEnabled.setOnCheckedChangeListener { _, isChecked ->
+                prefs.edit().putBoolean("transcoding_enabled", isChecked).apply()
+                updateStatus(statusText)
+              }
+              
+              bitrateSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                  prefs.edit().putString("ac3_bitrate", bitrates[position]).apply()
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
+              }
+              
+              channelsSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                  val channelCount = if(position == 1) 6 else 2
+                  prefs.edit().putInt("ac3_channels", channelCount).apply()
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
+              }
+              
+              updateStatus(statusText)
+            }
+            
+            private fun updateStatus(statusText: TextView) {
+              val enabled = prefs.getBoolean("transcoding_enabled", true)
+              val status = if(enabled) "Audio transcoding ENABLED - AC3 output" else "Audio transcoding DISABLED - passthrough"
+              statusText.text = status
+              statusText.setTextColor(getColor(if(enabled) android.R.color.holo_green_dark else android.R.color.holo_orange_dark))
+            }
+          }
+          EOF
+
+      - name: Create Settings Layout
+        run: |
+          cat > app/src/main/res/layout/activity_settings.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:padding="16dp">
+            
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="center_horizontal">
+              
+              <TextView
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:text="Header Proxy Player Settings"
+                  android:textSize="24sp"
+                  android:textStyle="bold"
+                  android:layout_marginBottom="24dp"/>
+              
+              <TextView
+                  android:id="@+id/text_status"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:text="Status"
+                  android:textSize="16sp"
+                  android:layout_marginBottom="16dp"/>
+              
+              <Switch
+                  android:id="@+id/switch_transcoding"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:text="Enable Audio Transcoding to AC3"
+                  android:textSize="18sp"
+                  android:layout_marginBottom="24dp"/>
+              
+              <TextView
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:text="AC3 Bitrate:"
+                  android:textSize="16sp"
+                  android:layout_marginBottom="8dp"/>
+              
+              <Spinner
+                  android:id="@+id/spinner_bitrate"
+                  android:layout_width="200dp"
+                  android:layout_height="wrap_content"
+                  android:layout_marginBottom="24dp"/>
+              
+              <TextView
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:text="Channel Configuration:"
+                  android:textSize="16sp"
+                  android:layout_marginBottom="8dp"/>
+              
+              <Spinner
+                  android:id="@+id/spinner_channels"
+                  android:layout_width="200dp"
+                  android:layout_height="wrap_content"
+                  android:layout_marginBottom="32dp"/>
+              
+              <TextView
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:text="• Transcoding converts AAC/MP3/other audio to AC3 Dolby Digital\n• AC3/DTS streams are passed through unchanged\n• Higher bitrates = better quality but more processing\n• 5.1 surround requires compatible content\n• Disable if experiencing performance issues"
+                  android:textSize="14sp"
+                  android:background="#f0f0f0"
+                  android:padding="12dp"/>
+            
+            </LinearLayout>
+          </ScrollView>
+          EOF
+
+      - name: Create ProxyService.kt with FFmpeg
+        run: |
+          cat > app/src/main/java/com/example/headerproxyplayer/proxy/ProxyService.kt << 'EOF'
+          package com.example.headerproxyplayer.proxy
+          import android.app.Service
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.content.Intent
+          import android.os.IBinder
+          import androidx.core.app.NotificationCompat
+          import android.util.Base64
+          import com.example.headerproxyplayer.audio.AudioTranscoder
+
+          class ProxyService : Service() {
+            companion object {
+              const val EXTRA_UPSTREAM_URL = "extra_upstream_url"
+              private const val CHANNEL_ID = "proxy_channel"
+              private const val NOTIF_ID = 1
+              @Volatile private var currentUrl: String? = null
+              fun getLocalUrl() = currentUrl
+            }
+            
+            private var proxy: LocalProxy? = null
+            
+            override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+              val up = intent?.getStringExtra(EXTRA_UPSTREAM_URL) ?: return START_NOT_STICKY
+              val rules = RulesManager.load(this)
+              val transcoder = AudioTranscoder(this)
+              val port = (10000..60000).random()
+              
+              proxy = LocalProxy(rules, transcoder, port).apply{ start() }
+              currentUrl = "http://127.0.0.1:$port/proxy?u=" +
+                Base64.encodeToString(up.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP)
+              
+              val nm = getSystemService(NotificationManager::class.java)
+              nm.createNotificationChannel(NotificationChannel(CHANNEL_ID, "Proxy", NotificationManager.IMPORTANCE_LOW))
+              startForeground(NOTIF_ID,
+                NotificationCompat.Builder(this, CHANNEL_ID)
+                  .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                  .setContentTitle("Header Proxy + Audio Transcoding")
+                  .setContentText("Running with AC3 transcoding")
+                  .build())
+              return START_STICKY
+            }
+            
+            override fun onDestroy() {
+              proxy?.stop()
+              currentUrl = null
+              super.onDestroy()
+            }
+            
+            override fun onBind(intent: Intent?) = null
+          }
+          EOF
+
+      - name: Create AudioTranscoder.kt
+        run: |
+          cat > app/src/main/java/com/example/headerproxyplayer/audio/AudioTranscoder.kt << 'EOF'
+          package com.example.headerproxyplayer.audio
+          import android.content.Context
+          import android.util.Log
+          import com.arthenica.ffmpegkit.FFmpegKit
+          import com.arthenica.ffmpegkit.ReturnCode
+          import java.io.File
+          import java.util.concurrent.ConcurrentHashMap
+
+          class AudioTranscoder(private val context: Context) {
+            private val transcodingCache = ConcurrentHashMap<String, ByteArray>()
+            private val settings = context.getSharedPreferences("proxy_settings", Context.MODE_PRIVATE)
+            
+            fun isTranscodingEnabled(): Boolean {
+              return settings.getBoolean("transcoding_enabled", true)
+            }
+            
+            fun shouldTranscodeUrl(url: String): Boolean {
+              if (!isTranscodingEnabled()) return false
+              
+              // Skip if already AC3/DTS
+              if (url.contains(".ac3", true) || url.contains(".dts", true)) return false
+              
+              // Transcode common lossy formats
+              return url.contains(".aac", true) || 
+                     url.contains(".mp3", true) || 
+                     url.contains(".m4a", true) ||
+                     (url.contains(".ts") && !url.contains("video")) // Audio-only TS segments
+            }
+            
+            fun transcodeAudio(inputBytes: ByteArray, sourceUrl: String): ByteArray? {
+              try {
+                // Check cache first
+                val cacheKey = sourceUrl.hashCode().toString()
+                transcodingCache[cacheKey]?.let { return it }
+                
+                val tempDir = File(context.cacheDir, "ffmpeg_temp")
+                tempDir.mkdirs()
+                
+                val inputFile = File(tempDir, "input_${System.currentTimeMillis()}")
+                val outputFile = File(tempDir, "output_${System.currentTimeMillis()}.ac3")
+                
+                inputFile.writeBytes(inputBytes)
+                
+                val bitrate = settings.getString("ac3_bitrate", "640k")
+                val channels = settings.getInt("ac3_channels", 6)
+                
+                val command = buildString {
+                  append("-y ") // Overwrite output
+                  append("-i ${inputFile.absolutePath} ")
+                  append("-c:a ac3 ") // AC3 codec
+                  append("-b:a $bitrate ") // Bitrate
+                  append("-ac $channels ") // Channel count
+                  append("-ar 48000 ") // 48kHz sample rate (AC3 standard)
+                  if (channels == 6) {
+                    append("-channel_layout 5.1 ") // Explicit 5.1 layout
+                  }
+                  append(outputFile.absolutePath)
+                }
+                
+                Log.d("AudioTranscoder", "FFmpeg command: $command")
+                val session = FFmpegKit.execute(command)
+                
+                return if (ReturnCode.isSuccess(session.returnCode)) {
+                  val result = outputFile.readBytes()
+                  // Cache successful transcoding
+                  if (result.isNotEmpty()) {
+                    transcodingCache[cacheKey] = result
+                  }
+                  
+                  // Cleanup
+                  inputFile.delete()
+                  outputFile.delete()
+                  
+                  Log.d("AudioTranscoder", "Successfully transcoded ${inputBytes.size} -> ${result.size} bytes")
+                  result
+                } else {
+                  Log.w("AudioTranscoder", "FFmpeg failed: ${session.output}")
+                  inputFile.delete()
+                  outputFile.delete()
+                  null
+                }
+                
+              } catch (e: Exception) {
+                Log.e("AudioTranscoder", "Transcoding error: ${e.message}", e)
+                return null
+              }
+            }
+            
+            fun clearCache() {
+              transcodingCache.clear()
+            }
+          }
+          EOF
+
+      - name: Create Enhanced LocalProxy.kt
+        run: |
+          cat > app/src/main/java/com/example/headerproxyplayer/proxy/LocalProxy.kt << 'EOF'
+          package com.example.headerproxyplayer.proxy
+          import fi.iki.elonen.NanoHTTPD
+          import fi.iki.elonen.NanoHTTPD.Response
+          import fi.iki.elonen.NanoHTTPD.Response.Status
+          import okhttp3.*
+          import okhttp3.HttpUrl
+          import android.util.Base64
+          import android.util.Log
+          import java.io.ByteArrayInputStream
+          import com.example.headerproxyplayer.audio.AudioTranscoder
+
+          class LocalProxy(
+              private val rules: RulesManager,
+              private val transcoder: AudioTranscoder,
+              port: Int
+          ) : NanoHTTPD("127.0.0.1", port) {
+
+            private val client = OkHttpClient.Builder()
+              .addInterceptor { chain ->
+                val r = chain.request().newBuilder()
+                  .header("User-Agent", rules.defaultUserAgent())
+                  .header("Referer", "${chain.request().url.scheme}://${chain.request().url.host}/")
+                rules.headersFor(chain.request().url.host).forEach{(k,v)-> r.header(k,v) }
+                chain.proceed(r.build())
+              }.build()
+
+            override fun serve(session: IHTTPSession): Response {
+              val enc = session.parameters["u"]?.firstOrNull()
+                ?: return newFixedLengthResponse(Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing u")
+              val target = String(Base64.decode(enc, Base64.URL_SAFE))
+              
+              Log.d("LocalProxy", "Serving: $target")
+              
+              val req = Request.Builder().url(target)
+              session.headers["range"]?.let{req.header("Range",it)}
+              
+              val up = client.newCall(req.build()).execute()
+              val body = up.body ?: return newFixedLengthResponse(Status.BAD_GATEWAY, MIME_PLAINTEXT, "Empty")
+              val mime = up.header("Content-Type") ?: "application/octet-stream"
+              
+              // Check if this needs audio transcoding
+              if (transcoder.shouldTranscodeUrl(target) && isAudioContent(mime, target)) {
+                return handleAudioTranscoding(up, body, target)
+              }
+              
+              // Handle HLS playlists with potential audio track rewriting
+              val isM3u = mime.contains("mpegurl",true) || target.endsWith(".m3u8")
+              val resp = if(isM3u){
+                val txt = body.string()
+                val base = up.request.url
+                val lb = "http://127.0.0.1:$listeningPort/proxy?u="
+                val rewritten = if(transcoder.isTranscodingEnabled()) {
+                  rewriteM3U8WithAudioProcessing(txt, base, lb)
+                } else {
+                  rewriteM3U8(txt, base, lb)
+                }
+                val out = rewritten.toByteArray()
+                newFixedLengthResponse(Status.lookup(up.code)?:Status.OK,
+                  "application/vnd.apple.mpegurl", ByteArrayInputStream(out), out.size.toLong())
+              } else {
+                newFixedLengthResponse(
+                  Status.lookup(up.code)?:Status.OK, mime, body.byteStream(),
+                  body.contentLength().coerceAtLeast(0L))
+              }
+              
+              // Preserve streaming headers
+              up.headers.forEach{(k,v)->
+                if(k.equals("Content-Range",true)||k.equals("Accept-Ranges",true)||k.equals("Cache-Control",true))
+                  resp.addHeader(k,v)
+              }
+              return resp
+            }
+            
+            private fun isAudioContent(mime: String, url: String): Boolean {
+              return mime.startsWith("audio/") || 
+                     url.contains(".aac", true) || 
+                     url.contains(".mp3", true) ||
+                     url.contains(".m4a", true) ||
+                     (url.contains(".ts") && url.contains("audio"))
+            }
+            
+            private fun handleAudioTranscoding(upstream: okhttp3.Response, body: ResponseBody, url: String): Response {
+              try {
+                val inputBytes = body.bytes()
+                Log.d("LocalProxy", "Attempting to transcode ${inputBytes.size} bytes from $url")
+                
+                val transcodedBytes = transcoder.transcodeAudio(inputBytes, url)
+                
+                return if (transcodedBytes != null && transcodedBytes.isNotEmpty()) {
+                  Log.d("LocalProxy", "Transcoding successful: ${inputBytes.size} -> ${transcodedBytes.size} bytes")
+                  newFixedLengthResponse(
+                    Status.lookup(upstream.code) ?: Status.OK,
+                    "audio/ac3",
+                    ByteArrayInputStream(transcodedBytes),
+                    transcodedBytes.size.toLong()
+                  )
+                } else {
+                  Log.w("LocalProxy", "Transcoding failed, serving original")
+                  // Fallback to original
+                  newFixedLengthResponse(
+                    Status.lookup(upstream.code) ?: Status.OK,
+                    upstream.header("Content-Type") ?: "application/octet-stream",
+                    ByteArrayInputStream(inputBytes),
+                    inputBytes.size.toLong()
+                  )
+                }
+                
+              } catch (e: Exception) {
+                Log.e("LocalProxy", "Audio transcoding error: ${e.message}", e)
+                return newFixedLengthResponse(Status.INTERNAL_ERROR, MIME_PLAINTEXT, "Transcoding error")
+              }
+            }
+
+            private fun rewriteM3U8WithAudioProcessing(txt: String, base: HttpUrl, lb: String): String {
+              val lines = txt.lines().toMutableList()
+              var i = 0
+              
+              while (i < lines.size) {
+                val line = lines[i]
+                
+                when {
+                  // Update audio track codecs for transcoded content
+                  line.startsWith("#EXT-X-MEDIA:") && line.contains("TYPE=AUDIO") -> {
+                    if (shouldUpdateAudioTrack(line)) {
+                      lines[i] = line.replace(Regex("CODECS=\"[^\"]*\""), "CODECS=\"ac-3\"")
+                    }
+                  }
+                  
+                  // Update stream variant codecs
+                  line.startsWith("#EXT-X-STREAM-INF:") -> {
+                    lines[i] = updateStreamCodecsForTranscoding(line)
+                  }
+                  
+                  // Regular URI rewriting
+                  !line.startsWith("#") && line.isNotBlank() -> {
+                    lines[i] = proxify(base.resolve(line)?.toString() ?: line, lb)
+                  }
+                }
+                i++
+              }
+              
+              return lines.joinToString("\n")
+            }
+            
+            private fun shouldUpdateAudioTrack(mediaLine: String): Boolean {
+              // Update if not already AC3/DTS
+              return !mediaLine.contains("ac-3", true) && !mediaLine.contains("dts", true)
+            }
+            
+            private fun updateStreamCodecsForTranscoding(streamLine: String): String {
+              // Add or update audio codec info for streams that will have transcoded audio
+              return if (streamLine.contains("CODECS=")) {
+                streamLine.replace(Regex("CODECS=\"([^\"]*?)\"")) { match ->
+                  val codecs = match.groupValues[1]
+                  val audioCodec = if (codecs.contains("ac-3") || codecs.contains("dts")) {
+                    codecs // Keep existing AC3/DTS
+                  } else {
+                    // Replace audio codec with AC3
+                    codecs.split(",").map { codec ->
+                      if (codec.trim().startsWith("mp4a") || codec.trim().startsWith("aac")) "ac-3"
+                      else codec.trim()
+                    }.joinToString(",")
+                  }
+                  "CODECS=\"$audioCodec\""
+                }
+              } else streamLine
+            }
+
+            private fun rewriteM3U8(txt:String, base:HttpUrl, lb:String)=
+              txt.lineSequence().joinToString("\n"){l->
+                when{
+                  l.startsWith("#EXT-X-KEY")->{
+                    val uri = Regex("URI=\"([^\"]+)\"").find(l)?.groupValues?.get(1)
+                    if(uri!=null){
+                      val abs = base.resolve(uri)?.toString()?:uri
+                      l.replace(uri,proxify(abs, lb))
+                    } else l
+                  }
+                  l.isBlank()||l.startsWith("#")->l
+                  else->proxify(base.resolve(l)?.toString()?:l, lb)
+                }
+              }
+              
+            private fun proxify(abs: String, lb: String): String {
+              return lb + Base64.encodeToString(abs.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP)
+            }
+          }
+          EOF
+
+      - name: Create RulesManager.kt
+        run: |
+          cat > app/src/main/java/com/example/headerproxyplayer/proxy/RulesManager.kt << 'EOF'
+          package com.example.headerproxyplayer.proxy
+          import android.content.Context
+          import org.json.JSONObject
+          class RulesManager(private val map: Map<String, Map<String, String>>) {
+            companion object {
+              fun load(ctx: Context): RulesManager {
+                return try {
+                  val j = ctx.assets.open("rules.json").bufferedReader().use{it.readText()}
+                  val arr = JSONObject(j).getJSONArray("rules")
+                  val m = mutableMapOf<String, Map<String,String>>()
+                  for(i in 0 until arr.length()){
+                    val o=arr.getJSONObject(i)
+                    val h=o.getJSONObject("headers")
+                    m[o.getString("host")] = h.keys().asSequence().associateWith{h.getString(it)}
+                  }
+                  RulesManager(m)
+                } catch(_:Exception){ RulesManager(emptyMap()) }
+              }
+            }
+            fun defaultUserAgent()= "Mozilla/5.0 (Linux; Android 11; TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+            fun headersFor(host:String)=
+              map[host] ?: map.entries.firstOrNull{it.key.startsWith("*.")&&host.endsWith(it.key.removePrefix("*."))}?.value ?: emptyMap()
+          }
+          EOF
+
+      - name: Create rules.json and resources
+        run: |
+          cat > app/src/main/assets/rules.json << 'EOF'
+          {"rules":[{"host":"net50.cc","headers":{"Referer":"$ORIGIN/","Cookie":"hd=on"}},{"host":"*.net50.cc","headers":{"Referer":"$ORIGIN/","Cookie":"hd=on"}}]}
+          EOF
+          
+          cat > app/src/main/res/values/strings.xml << 'EOF'
+          <resources>
+              <string name="app_name">Header Proxy Player</string>
+          </resources>
+          EOF
+
+          cat > app/src/main/res/values/colors.xml << 'EOF'
+          <resources>
+              <color name="ic_launcher_background">#2B2B2B</color>
+          </resources>
+          EOF
+
+          cat > app/src/main/res/drawable/ic_launcher_foreground.xml << 'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+              <path android:fillColor="#FFFFFF" android:pathData="M20,54 L88,54 L88,64 L20,64 Z"/>
+              <path android:fillColor="#FFFFFF" android:pathData="M20,44 L68,44 L68,34 L88,54 L68,74 L68,64 L20,64 Z"/>
+          </vector>
+          EOF
+
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml << 'EOF'
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background"/>
+              <foreground android:drawable="@drawable/ic_launcher_foreground"/>
+          </adaptive-icon>
+          EOF
+
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml << 'EOF'
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background"/>
+              <foreground android:drawable="@drawable/ic_launcher_foreground"/>
+          </adaptive-icon>
+          EOF
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build Debug APK with FFmpeg (No Cache)
+        run: |
+          wget -q https://services.gradle.org/distributions/gradle-8.7-bin.zip
+          unzip -q gradle-8.7-bin.zip
+          export PATH=$PWD/gradle-8.7/bin:$PATH
+          gradle :app:assembleDebug --no-daemon --no-build-cache
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: header-proxy-player-ffmpeg-debug
+          path: app/build/outputs/apk/debug/*.apk
+
+      - name: Create Release (on main branch push)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/create-release@v1
+        id: create_release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v2.0.${{ github.run_number }}
+          release_name: Header Proxy Player with FFmpeg v2.0.${{ github.run_number }}
+          body: |
+            ## Header Proxy Player with Audio Transcoding
+            
+            Universal APK with ARMv7 and ARM64 support + FFmpeg audio transcoding.
+            
+            ### New Features:
+            - **Real-time Audio Transcoding**: Converts AAC/MP3/other formats to AC3 Dolby Digital 5.1
+            - **Passthrough Support**: AC3/DTS streams are preserved unchanged
+            - **Settings App**: Configure transcoding on/off, bitrate (384k-768k), channel layout
+            - **Smart Detection**: Only transcodes when needed, preserves quality formats
+            - **Cache System**: Reduces CPU usage for repeated segments
+            
+            ### Usage:
+            1. Install APK and open "Header Proxy Player Settings" from launcher
+            2. Configure audio transcoding preferences
+            3. Use as external player for Cloudstream video links
+            4. Select ViMu/VLC/mpv - audio will be automatically transcoded to AC3
+            
+            ### Perfect for:
+            - Optical audio setups requiring AC3/DTS
+            - Android TV boxes with limited codec support
+            - Home theater systems with DD/DTS decoders
+            
+            **APK Size**: ~45-60MB (includes FFmpeg)
+            **Requirements**: Android 7.0+ (API 24+)
+          draft: false
+          prerelease: false
+
+      - name: Upload APK to Release
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: app/build/outputs/apk/debug/app-debug.apk
+          asset_name: header-proxy-player-ffmpeg-universal-debug.apk
+          asset_content_type: application/vnd.android.package-archive
