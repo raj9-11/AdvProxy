@@ -58,7 +58,7 @@ jobs:
 
       - name: Download FFmpeg-Kit LTS AAR (local fallback)
         run: |
-          # FFmpeg-Kit was retired; use the last LTS AAR from a public mirror to ensure availability
+          # FFmpeg-Kit retired; use last LTS AAR from a public mirror
           wget -q -O app/libs/ffmpeg-kit-full-gpl-6.0-2.LTS.aar "https://artifactory.appodeal.com/appodeal-public/com/arthenica/ffmpeg-kit-full-gpl/6.0-2.LTS/ffmpeg-kit-full-gpl-6.0-2.LTS.aar" || echo "FFmpeg AAR mirror not reachable"
 
       - name: Create app/build.gradle.kts (namespace + local AAR)
@@ -234,60 +234,48 @@ jobs:
 
           class SettingsActivity : AppCompatActivity() {
             private lateinit var prefs: SharedPreferences
-
             override fun onCreate(savedInstanceState: Bundle?) {
               super.onCreate(savedInstanceState)
               setContentView(R.layout.activity_settings)
               prefs = getSharedPreferences("proxy_settings", Context.MODE_PRIVATE)
               setupUI()
             }
-
             private fun setupUI() {
               val transcodingEnabled = findViewById<Switch>(R.id.switch_transcoding)
               val bitrateSpinner = findViewById<Spinner>(R.id.spinner_bitrate)
               val channelsSpinner = findViewById<Spinner>(R.id.spinner_channels)
               val statusText = findViewById<TextView>(R.id.text_status)
-
               transcodingEnabled.isChecked = prefs.getBoolean("transcoding_enabled", true)
-
-              val bitrates = arrayOf("384k", "448k", "640k", "768k")
+              val bitrates = arrayOf("384k","448k","640k","768k")
               bitrateSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, bitrates)
-              val currentBitrate = prefs.getString("ac3_bitrate", "640k")
+              val currentBitrate = prefs.getString("ac3_bitrate","640k")
               bitrateSpinner.setSelection(bitrates.indexOf(currentBitrate))
-
-              val channels = arrayOf("2 (Stereo)", "6 (5.1 Surround)")
+              val channels = arrayOf("2 (Stereo)","6 (5.1 Surround)")
               channelsSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, channels)
-              val currentChannels = prefs.getInt("ac3_channels", 6)
-              channelsSpinner.setSelection(if (currentChannels == 6) 1 else 0)
-
-              transcodingEnabled.setOnCheckedChangeListener { _, isChecked ->
-                prefs.edit().putBoolean("transcoding_enabled", isChecked).apply()
-                updateStatus(statusText)
+              val currentChannels = prefs.getInt("ac3_channels",6)
+              channelsSpinner.setSelection(if(currentChannels==6) 1 else 0)
+              transcodingEnabled.setOnCheckedChangeListener { _, b ->
+                prefs.edit().putBoolean("transcoding_enabled", b).apply(); updateStatus(statusText)
               }
-
-              bitrateSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
-                  prefs.edit().putString("ac3_bitrate", bitrates[position]).apply()
+              bitrateSpinner.onItemSelectedListener = object: AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p:AdapterView<*>?, v:android.view.View?, pos:Int, id:Long) {
+                  prefs.edit().putString("ac3_bitrate", bitrates[pos]).apply()
                 }
-                override fun onNothingSelected(parent: AdapterView<*>?) {}
+                override fun onNothingSelected(p:AdapterView<*>?) {}
               }
-
-              channelsSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
-                  val channelCount = if (position == 1) 6 else 2
-                  prefs.edit().putInt("ac3_channels", channelCount).apply()
+              channelsSpinner.onItemSelectedListener = object: AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p:AdapterView<*>?, v:android.view.View?, pos:Int, id:Long) {
+                  prefs.edit().putInt("ac3_channels", if(pos==1) 6 else 2).apply()
                 }
-                override fun onNothingSelected(parent: AdapterView<*>?) {}
+                override fun onNothingSelected(p:AdapterView<*>?) {}
               }
-
               updateStatus(statusText)
             }
-
             private fun updateStatus(statusText: TextView) {
               val enabled = prefs.getBoolean("transcoding_enabled", true)
-              val status = if (enabled) "Audio transcoding ENABLED - AC3 output" else "Audio transcoding DISABLED - passthrough"
+              val status = if(enabled) "Audio transcoding ENABLED - AC3 output" else "Audio transcoding DISABLED - passthrough"
               statusText.text = status
-              statusText.setTextColor(getColor(if (enabled) android.R.color.holo_green_dark else android.R.color.holo_orange_dark))
+              statusText.setTextColor(getColor(if(enabled) android.R.color.holo_green_dark else android.R.color.holo_orange_dark))
             }
           }
           EOF
@@ -446,16 +434,12 @@ jobs:
               try {
                 val cacheKey = sourceUrl.hashCode().toString()
                 transcodingCache[cacheKey]?.let { return it }
-
                 val tempDir = File(context.cacheDir, "ffmpeg_temp").apply { mkdirs() }
                 val inputFile = File(tempDir, "input_${System.currentTimeMillis()}")
                 val outputFile = File(tempDir, "output_${System.currentTimeMillis()}.ac3")
-
                 inputFile.writeBytes(inputBytes)
-
                 val bitrate = settings.getString("ac3_bitrate", "640k")
                 val channels = settings.getInt("ac3_channels", 6)
-
                 val command = buildString {
                   append("-y ")
                   append("-i ${inputFile.absolutePath} ")
@@ -466,21 +450,17 @@ jobs:
                   if (channels == 6) append("-channel_layout 5.1 ")
                   append(outputFile.absolutePath)
                 }
-
                 Log.d("AudioTranscoder", "FFmpeg command: $command")
                 val session = FFmpegKit.execute(command)
-
                 return if (ReturnCode.isSuccess(session.returnCode)) {
                   val result = outputFile.readBytes()
                   if (result.isNotEmpty()) transcodingCache[cacheKey] = result
-                  inputFile.delete()
-                  outputFile.delete()
+                  inputFile.delete(); outputFile.delete()
                   Log.d("AudioTranscoder", "Transcoded ${inputBytes.size} -> ${result.size} bytes")
                   result
                 } else {
                   Log.w("AudioTranscoder", "FFmpeg failed: ${session.output}")
-                  inputFile.delete()
-                  outputFile.delete()
+                  inputFile.delete(); outputFile.delete()
                   null
                 }
               } catch (e: Exception) {
@@ -488,12 +468,11 @@ jobs:
                 return null
               }
             }
-
             fun clearCache() = transcodingCache.clear()
           }
           EOF
 
-      - name: Create LocalProxy.kt
+      - name: Create LocalProxy.kt (with BAD_GATEWAY fix)
         run: |
           cat > app/src/main/java/com/example/headerproxyplayer/proxy/LocalProxy.kt << 'EOF'
           package com.example.headerproxyplayer.proxy
@@ -515,24 +494,25 @@ jobs:
 
             private val client = OkHttpClient.Builder()
               .addInterceptor { chain ->
-                val requestUrl = chain.request().url
+                val u = chain.request().url
                 val r = chain.request().newBuilder()
                   .header("User-Agent", rules.defaultUserAgent())
-                  .header("Referer", "${requestUrl.scheme}://${requestUrl.host}/")
-                rules.headersFor(requestUrl.host).forEach { (k, v) -> r.header(k, v) }
+                  .header("Referer", "${u.scheme}://${u.host}/")
+                rules.headersFor(u.host).forEach { (k, v) -> r.header(k, v) }
                 chain.proceed(r.build())
               }.build()
 
             override fun serve(session: IHTTPSession): Response {
               val enc = session.parameters["u"]?.firstOrNull()
-                ?: return newFixedLengthResponse(Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing u")
+                ?: return newFixedLengthResponse(Status.BAD_REQUEST, NanoHTTPD.MIME_PLAINTEXT, "Missing u")
               val target = String(Base64.decode(enc, Base64.URL_SAFE))
               Log.d("LocalProxy", "Serving: $target")
 
               val reqB = Request.Builder().url(target)
               session.headers["range"]?.let { reqB.header("Range", it) }
               val upstream = client.newCall(reqB.build()).execute()
-              val body = upstream.body ?: return newFixedLengthResponse(Status.BAD_GATEWAY, MIME_PLAINTEXT, "Empty")
+              val body = upstream.body
+                ?: return newFixedLengthResponse(Status.SERVICE_UNAVAILABLE, NanoHTTPD.MIME_PLAINTEXT, "Empty upstream")
               val mime = upstream.header("Content-Type") ?: "application/octet-stream"
 
               if (transcoder.shouldTranscodeUrl(target) && isAudioContent(mime, target)) {
@@ -603,7 +583,7 @@ jobs:
                 }
               } catch (e: Exception) {
                 Log.e("LocalProxy", "Transcoding error: ${e.message}", e)
-                newFixedLengthResponse(Status.INTERNAL_ERROR, MIME_PLAINTEXT, "Transcoding error")
+                newFixedLengthResponse(Status.INTERNAL_ERROR, NanoHTTPD.MIME_PLAINTEXT, "Transcoding error")
               }
             }
 
@@ -637,7 +617,7 @@ jobs:
             private fun updateStreamCodecsForTranscoding(streamLine: String): String {
               return if (streamLine.contains("CODECS=")) {
                 streamLine.replace(Regex("CODECS=\"([^\"]*?)\"")) { match ->
-                  val codecs = match.groupValues[4]
+                  val codecs = match.groupValues[5]
                   val audioCodec = if (codecs.contains("ac-3") || codecs.contains("dts")) {
                     codecs
                   } else {
