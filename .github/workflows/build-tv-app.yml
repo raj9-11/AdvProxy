@@ -29,13 +29,14 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # --- THE OPENSSL FIX ---
       - name: Fix OpenSSL Cross-Compilation for Android
         run: |
           cd rust-backend
-          # Forces the Rust compiler to build OpenSSL from source for the Android architecture
-          cargo add openssl --features vendored
-      # -----------------------
+          # Bypass 'cargo add' and forcefully inject the latest vendored feature directly into the config
+          echo '' >> Cargo.toml
+          echo '[dependencies.openssl]' >> Cargo.toml
+          echo 'version = "0.10.64"' >> Cargo.toml
+          echo 'features = ["vendored"]' >> Cargo.toml
 
       - name: Compile Rust Binary for Android Architectures
         run: |
