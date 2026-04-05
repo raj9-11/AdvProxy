@@ -29,11 +29,9 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # --- THE BULLETPROOF OPENSSL FIX ---
       - name: Fix OpenSSL Cross-Compilation for Android
         run: |
           cd rust-backend
-          
           # 1. Scrub the Cargo.toml of any existing openssl entries to prevent the duplicate key error
           sed -i '/^openssl[[:space:]]*=/d' Cargo.toml
           sed -i '/^\[dependencies\.openssl\]/d' Cargo.toml
@@ -43,12 +41,10 @@ jobs:
           echo '[dependencies.openssl]' >> Cargo.toml
           echo 'version = "*"' >> Cargo.toml
           echo 'features = ["vendored"]' >> Cargo.toml
-      # -----------------------------------
 
       - name: Compile Rust Binary for Android Architectures
         run: |
           cd rust-backend
-          # Build executable binaries for both 64-bit and 32-bit Android TV boxes
           cargo ndk -t arm64-v8a build --release
           cargo ndk -t armeabi-v7a build --release
 
@@ -58,7 +54,6 @@ jobs:
           mkdir -p android-tv-app/app/src/main/assets/arm64-v8a
           mkdir -p android-tv-app/app/src/main/assets/armeabi-v7a
           
-          # Copy the freshly compiled Rust binaries into the Android Assets folder
           cp rust-backend/target/aarch64-linux-android/release/mediaflow-proxy-light android-tv-app/app/src/main/assets/arm64-v8a/
           cp rust-backend/target/armv7-linux-androideabi/release/mediaflow-proxy-light android-tv-app/app/src/main/assets/armeabi-v7a/
 
@@ -66,7 +61,7 @@ jobs:
         run: |
           cat << 'EOF' > android-tv-app/app/src/main/AndroidManifest.xml
           <?xml version="1.0" encoding="utf-8"?>
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.mediaflow.proxy">
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -77,7 +72,7 @@ jobs:
               <application
                   android:allowBackup="true"
                   android:label="MediaFlow Proxy"
-                  android:theme="@android:style/Theme.DeviceDefault.Leanback">
+                  android:theme="@android:style/Theme.DeviceDefault">
                   
                   <activity android:name=".MainActivity"
                       android:exported="true"
@@ -156,6 +151,153 @@ jobs:
           }
           EOF
 
+      - name: Generate UI Activity (Java)
+        run: |
+          cat << 'EOF' > android-tv-app/app/src/main/java/com/mediaflow/proxy/MainActivity.java
+          package com.mediaflow.proxy;
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.InputStream;
+
+          public class MainActivity extends Activity {
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  
+                  SharedPreferences prefs = getSharedPreferences("MediaFlowPrefs", MODE_PRIVATE);
+                  
+                  LinearLayout layout = new LinearLayout(this);
+                  layout.setOrientation(LinearLayout.VERTICAL);
+                  layout.setPadding(60, 60, 60, 60);
+                  
+                  TextView title = new TextView(this);
+                  title.setText("MediaFlow Proxy Light (Android TV)");
+                  title.setTextSize(26);
+                  title.setPadding(0, 0, 0, 40);
+                  layout.addView(title);
+                  
+                  TextView portLabel = new TextView(this); portLabel.setText("Port:"); layout.addView(portLabel);
+                  EditText portInput = new EditText(this);
+                  portInput.setText(prefs.getString("port", "8888"));
+                  layout.addView(portInput);
+                  
+                  TextView passLabel = new TextView(this); passLabel.setText("API Password:"); layout.addView(passLabel);
+                  EditText passInput = new EditText(this);
+                  passInput.setText(prefs.getString("password", "1234"));
+                  layout.addView(passInput);
+                  
+                  Button startBtn = new Button(this);
+                  startBtn.setText("Start Background Proxy");
+                  layout.addView(startBtn);
+
+                  Button stopBtn = new Button(this);
+                  stopBtn.setText("Stop Proxy");
+                  layout.addView(stopBtn);
+                  
+                  TextView status = new TextView(this);
+                  status.setPadding(0, 40, 0, 0);
+                  layout.addView(status);
+                  
+                  startBtn.setOnClickListener(v -> {
+                      prefs.edit().putString("port", portInput.getText().toString())
+                                  .putString("password", passInput.getText().toString()).apply();
+                                  
+                      try {
+                          String arch = Build.SUPPORTED_ABIS[0];
+                          String assetFolder = arch.contains("arm64") ? "arm64-v8a" : "armeabi-v7a";
+                          File binFile = new File(getFilesDir(), "mediaflow-proxy-light");
+                          
+                          if (!binFile.exists() || binFile.length() == 0) {
+                              InputStream is = getAssets().open(assetFolder + "/mediaflow-proxy-light");
+                              FileOutputStream fos = new FileOutputStream(binFile);
+                              byte[] buffer = new byte[1024]; int length;
+                              while ((length = is.read(buffer)) > 0) fos.write(buffer, 0, length);
+                              fos.close(); is.close();
+                              binFile.setExecutable(true);
+                          }
+                      } catch(Exception e) {
+                          status.setText("Extraction Error: " + e.getMessage());
+                          return;
+                      }
+
+                      Intent serviceIntent = new Intent(MainActivity.this, ProxyService.class);
+                      serviceIntent.putExtra("port", portInput.getText().toString());
+                      serviceIntent.putExtra("password", passInput.getText().toString());
+                      
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                          startForegroundService(serviceIntent);
+                      } else {
+                          startService(serviceIntent);
+                      }
+                      status.setText("Status: RUNNING on port " + portInput.getText().toString() + "\nYou can now press Home and open Stremio.");
+                  });
+
+                  stopBtn.setOnClickListener(v -> {
+                      stopService(new Intent(MainActivity.this, ProxyService.class));
+                      status.setText("Status: STOPPED");
+                  });
+                  
+                  setContentView(layout);
+              }
+          }
+          EOF
+
+      - name: Generate Gradle Build Files
+        run: |
+          cat << 'EOF' > android-tv-app/build.gradle
+          plugins { id 'com.android.application' version '8.2.0' apply false }
+          EOF
+          
+          cat << 'EOF' > android-tv-app/settings.gradle
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "MediaFlowProxy"
+          include ':app'
+          EOF
+          
+          cat << 'EOF' > android-tv-app/app/build.gradle
+          plugins { id 'com.android.application' }
+          android {
+              namespace 'com.mediaflow.proxy'
+              compileSdk 34
+              defaultConfig {
+                  applicationId "com.mediaflow.proxy.tv"
+                  minSdk 26
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+              buildTypes {
+                  release { minifyEnabled false }
+              }
+          }
+          EOF
+
+      - name: Compile Final APK
+        run: |
+          cd android-tv-app
+          gradle wrapper --gradle-version 8.4
+          ./gradlew assembleDebug
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaFlow-Proxy-TV-App
+          path: android-tv-app/app/build/outputs/apk/debug/app-debug.apk
       - name: Generate UI Activity (Java)
         run: |
           cat << 'EOF' > android-tv-app/app/src/main/java/com/mediaflow/proxy/MainActivity.java
