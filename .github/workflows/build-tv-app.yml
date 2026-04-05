@@ -1,4 +1,4 @@
-name: Build MediaFlow Proxy Android TV App
+name: Build MediaFlow Proxy Interceptor (Final Fix)
 
 on:
   workflow_dispatch:
@@ -29,25 +29,23 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Fix OpenSSL Cross-Compilation for Android
+      - name: Fix OpenSSL Cross-Compilation
         run: |
           cd rust-backend
           cargo remove openssl || true
           cargo add openssl@0.10.64 --features vendored
 
-      - name: Compile Rust Binary for Android Architectures
+      - name: Compile Rust Binary
         run: |
           cd rust-backend
           cargo ndk -t arm64-v8a build --release
           cargo ndk -t armeabi-v7a build --release
 
-      - name: Scaffold Android TV Project Structure (Using jniLibs Trick)
+      - name: Scaffold Project (jniLibs Trick)
         run: |
           mkdir -p android-tv-app/app/src/main/java/com/mediaflow/proxy
           mkdir -p android-tv-app/app/src/main/jniLibs/arm64-v8a
           mkdir -p android-tv-app/app/src/main/jniLibs/armeabi-v7a
-          
-          # We rename the executable to .so so Android's package manager grants it execution rights
           cp rust-backend/target/aarch64-linux-android/release/mediaflow-proxy-light android-tv-app/app/src/main/jniLibs/arm64-v8a/libmediaflow.so
           cp rust-backend/target/armv7-linux-androideabi/release/mediaflow-proxy-light android-tv-app/app/src/main/jniLibs/armeabi-v7a/libmediaflow.so
 
@@ -58,41 +56,28 @@ jobs:
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-              
-              <uses-feature android:name="android.software.leanback" android:required="true" />
-              <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
-              
               <application
-                  android:extractNativeLibs="true"
                   android:usesCleartextTraffic="true"
-                  android:allowBackup="true"
+                  android:extractNativeLibs="true"
                   android:label="MediaFlow Proxy"
-                  android:theme="@android:style/Theme.DeviceDefault">
-                  
-                  <activity android:name=".MainActivity"
-                      android:exported="true"
-                      android:banner="@android:drawable/sym_def_app_icon"
-                      android:icon="@android:drawable/sym_def_app_icon">
-                      
+                  android:theme="@android:style/Theme.Translucent.NoTitleBar">
+                  <activity android:name=".MainActivity" android:exported="true" android:excludeFromRecents="true" android:launchMode="singleTask">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
                           <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
-                      
                       <intent-filter>
                           <action android:name="android.intent.action.VIEW" />
                           <category android:name="android.intent.category.DEFAULT" />
                           <category android:name="android.intent.category.BROWSABLE" />
-                          <data android:scheme="http" />
-                          <data android:scheme="https" />
-                          <data android:mimeType="video/*" />
-                          <data android:mimeType="application/octet-stream" />
+                          <data android:scheme="http" /> <data android:scheme="https" />
+                          <data android:mimeType="video/*" /> <data android:mimeType="application/octet-stream" />
                       </intent-filter>
                   </activity>
-                  
-                  <service android:name=".ProxyService" android:exported="false" />
+                  <service android:name=".ProxyService" android:foregroundServiceType="dataSync" android:exported="false" />
               </application>
           </manifest>
           EOF
@@ -118,33 +103,34 @@ jobs:
                   String port = intent.getStringExtra("port");
                   String pass = intent.getStringExtra("password");
                   
+                  // KILL EXISTING PROCESS if user clicked Start again with new settings
+                  if (proxyProcess != null) {
+                      try { proxyProcess.destroy(); } catch (Exception e) {}
+                  }
+
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                       NotificationChannel channel = new NotificationChannel("proxy_channel", "MediaFlow Proxy Service", NotificationManager.IMPORTANCE_LOW);
                       getSystemService(NotificationManager.class).createNotificationChannel(channel);
                       Notification notif = new Notification.Builder(this, "proxy_channel")
                               .setContentTitle("MediaFlow Proxy")
-                              .setContentText("Running in background on port " + port)
-                              .setSmallIcon(android.R.drawable.sym_def_app_icon)
-                              .build();
+                              .setContentText("Running on port " + port)
+                              .setSmallIcon(android.R.drawable.sym_def_app_icon).build();
                       startForeground(1, notif);
                   }
 
-                  if (proxyProcess == null || !proxyProcess.isAlive()) {
-                      new Thread(() -> {
-                          try {
-                              // We point the process builder directly to the legally extracted native library
-                              File binFile = new File(getApplicationInfo().nativeLibraryDir, "libmediaflow.so");
-                              ProcessBuilder pb = new ProcessBuilder(binFile.getAbsolutePath());
-                              pb.environment().put("PORT", port);
-                              pb.environment().put("API_PASSWORD", pass);
-                              proxyProcess = pb.start();
-                              proxyProcess.waitFor();
-                          } catch (Exception e) {
-                              e.printStackTrace();
-                          }
-                      }).start();
-                  }
-                  
+                  new Thread(() -> {
+                      try {
+                          File binFile = new File(getApplicationInfo().nativeLibraryDir, "libmediaflow.so");
+                          ProcessBuilder pb = new ProcessBuilder(binFile.getAbsolutePath());
+                          
+                          // THE CORRECT ANDROID 14 HARDENED ENVIRONMENT VARIABLES
+                          pb.environment().put("APP__SERVER__PORT", port);
+                          pb.environment().put("APP__AUTH__API_PASSWORD", pass);
+                          
+                          proxyProcess = pb.start();
+                          proxyProcess.waitFor();
+                      } catch (Exception e) { e.printStackTrace(); }
+                  }).start();
                   return START_STICKY;
               }
 
@@ -153,13 +139,12 @@ jobs:
                   if (proxyProcess != null) proxyProcess.destroy();
                   super.onDestroy();
               }
-
               @Override
               public IBinder onBind(Intent intent) { return null; }
           }
           EOF
 
-      - name: Generate UI Activity & Interceptor Logic (Java)
+      - name: Generate UI & Interceptor (Java)
         run: |
           cat << 'EOF' > android-tv-app/app/src/main/java/com/mediaflow/proxy/MainActivity.java
           package com.mediaflow.proxy;
@@ -177,7 +162,6 @@ jobs:
           import java.net.URLEncoder;
 
           public class MainActivity extends Activity {
-              
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
@@ -190,16 +174,12 @@ jobs:
                       String pass = prefs.getString("password", "1234");
                       
                       try {
-                          Intent serviceIntent = new Intent(this, ProxyService.class);
-                          serviceIntent.putExtra("port", port);
-                          serviceIntent.putExtra("password", pass);
-                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                              startForegroundService(serviceIntent);
-                          } else {
-                              startService(serviceIntent);
-                          }
+                          Intent sIntent = new Intent(this, ProxyService.class);
+                          sIntent.putExtra("port", port); sIntent.putExtra("password", pass);
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) { startForegroundService(sIntent); } 
+                          else { startService(sIntent); }
 
-                          Thread.sleep(1500);
+                          Thread.sleep(1500); // Increased wait for reliability
 
                           String encodedUrl = URLEncoder.encode(originalUrl, "UTF-8");
                           String proxyUrl = "http://127.0.0.1:" + port + "/proxy/stream?d=" + encodedUrl + "&api_password=" + pass + "&ext=video.mkv";
@@ -207,116 +187,60 @@ jobs:
                           Intent playIntent = new Intent(Intent.ACTION_VIEW);
                           playIntent.setDataAndType(Uri.parse(proxyUrl), "video/*");
                           playIntent.putExtra("title", "MediaFlow Stream");
-                          playIntent.putExtra("android.intent.extra.TITLE", "MediaFlow Stream");
                           
-                          Intent chooserIntent = Intent.createChooser(playIntent, "Select Video Player");
-                          chooserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                          startActivity(chooserIntent);
-                          
-                      } catch (Exception e) {
-                          Toast.makeText(this, "Failed to unwrap link", Toast.LENGTH_LONG).show();
-                      }
-                      
-                      finish();
-                      return;
+                          Intent chooser = Intent.createChooser(playIntent, "Select Player");
+                          chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                          startActivity(chooser);
+                      } catch (Exception e) { Toast.makeText(this, "Link Failed", Toast.LENGTH_SHORT).show(); }
+                      finish(); return;
                   }
 
                   LinearLayout layout = new LinearLayout(this);
                   layout.setOrientation(LinearLayout.VERTICAL);
-                  layout.setPadding(60, 60, 60, 60);
+                  layout.setBackgroundColor(0xFF121212);
+                  layout.setPadding(80, 80, 80, 80);
                   
-                  TextView title = new TextView(this);
-                  title.setText("MediaFlow Interceptor");
-                  title.setTextSize(26);
-                  title.setPadding(0, 0, 0, 40);
-                  layout.addView(title);
+                  TextView t = new TextView(this); t.setText("MediaFlow Interceptor"); t.setTextSize(28); t.setTextColor(0xFFFFFFFF);
+                  layout.addView(t);
                   
-                  TextView portLabel = new TextView(this); portLabel.setText("Port:"); layout.addView(portLabel);
-                  EditText portInput = new EditText(this);
-                  portInput.setText(prefs.getString("port", "8888"));
-                  layout.addView(portInput);
+                  EditText portIn = new EditText(this); portIn.setText(prefs.getString("port", "8888")); portIn.setTextColor(0xFFFFFFFF);
+                  layout.addView(portIn);
                   
-                  TextView passLabel = new TextView(this); passLabel.setText("API Password:"); layout.addView(passLabel);
-                  EditText passInput = new EditText(this);
-                  passInput.setText(prefs.getString("password", "1234"));
-                  layout.addView(passInput);
+                  EditText passIn = new EditText(this); passIn.setText(prefs.getString("password", "1234")); passIn.setTextColor(0xFFFFFFFF);
+                  layout.addView(passIn);
                   
-                  Button startBtn = new Button(this);
-                  startBtn.setText("Start Background Proxy");
-                  layout.addView(startBtn);
-
-                  Button stopBtn = new Button(this);
-                  stopBtn.setText("Stop Proxy");
-                  layout.addView(stopBtn);
-                  
-                  TextView status = new TextView(this);
-                  status.setPadding(0, 40, 0, 0);
-                  layout.addView(status);
-                  
-                  startBtn.setOnClickListener(v -> {
-                      prefs.edit().putString("port", portInput.getText().toString())
-                                  .putString("password", passInput.getText().toString()).apply();
-                                  
-                      Intent serviceIntent = new Intent(MainActivity.this, ProxyService.class);
-                      serviceIntent.putExtra("port", portInput.getText().toString());
-                      serviceIntent.putExtra("password", passInput.getText().toString());
-                      
-                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                          startForegroundService(serviceIntent);
-                      } else {
-                          startService(serviceIntent);
-                      }
-                      status.setText("Status: RUNNING. \nYou can now click 'MediaFlow Proxy' inside Stremio!");
+                  Button start = new Button(this); start.setText("START / RESTART PROXY");
+                  start.setOnClickListener(v -> {
+                      prefs.edit().putString("port", portIn.getText().toString()).putString("password", passIn.getText().toString()).apply();
+                      Intent si = new Intent(this, ProxyService.class);
+                      si.putExtra("port", portIn.getText().toString()); si.putExtra("password", passIn.getText().toString());
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) { startForegroundService(si); } else { startService(si); }
+                      Toast.makeText(this, "Proxy (Re)Started", Toast.LENGTH_SHORT).show();
                   });
-
-                  stopBtn.setOnClickListener(v -> {
-                      stopService(new Intent(MainActivity.this, ProxyService.class));
-                      status.setText("Status: STOPPED");
-                  });
-                  
+                  layout.addView(start);
                   setContentView(layout);
               }
           }
           EOF
 
-      - name: Generate Gradle Build Files
+      - name: Build Gradle (Android 14 Target)
         run: |
           cat << 'EOF' > android-tv-app/build.gradle
           plugins { id 'com.android.application' version '8.2.0' apply false }
           EOF
-          
           cat << 'EOF' > android-tv-app/settings.gradle
-          pluginManagement {
-              repositories { google(); mavenCentral(); gradlePluginPortal() }
-          }
-          dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories { google(); mavenCentral() }
-          }
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
           rootProject.name = "MediaFlowProxy"
           include ':app'
           EOF
-          
           cat << 'EOF' > android-tv-app/app/build.gradle
           plugins { id 'com.android.application' }
           android {
               namespace 'com.mediaflow.proxy'
               compileSdk 34
-              defaultConfig {
-                  applicationId "com.mediaflow.proxy.tv"
-                  minSdk 26
-                  targetSdk 33
-                  versionCode 1
-                  versionName "1.0"
-              }
-              buildTypes {
-                  release { minifyEnabled false }
-              }
-              packagingOptions {
-                  jniLibs {
-                      useLegacyPackaging true
-                  }
-              }
+              defaultConfig { applicationId "com.mediaflow.proxy.tv"; minSdk 26; targetSdk 34; versionCode 1; versionName "1.0" }
+              packagingOptions { jniLibs { useLegacyPackaging true } }
           }
           EOF
 
@@ -326,8 +250,8 @@ jobs:
           gradle wrapper --gradle-version 8.4
           ./gradlew assembleDebug
 
-      - name: Upload APK Artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: MediaFlow-Proxy-TV-App
+          name: MediaFlow-Hardened-Final
           path: android-tv-app/app/build/outputs/apk/debug/app-debug.apk
