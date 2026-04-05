@@ -1,4 +1,4 @@
-name: Build MediaFlow Stub Resolver (Fixed Gradle)
+name: Build MediaFlow Stub Resolver (Clean Selector)
 
 on:
   workflow_dispatch:
@@ -29,12 +29,14 @@ jobs:
               <application
                   android:usesCleartextTraffic="true"
                   android:label="MediaFlow Resolver"
+                  android:banner="@android:drawable/sym_def_app_icon"
+                  android:icon="@android:drawable/sym_def_app_icon"
                   android:theme="@android:style/Theme.DeviceDefault.Dialog">
                   
                   <activity android:name=".MainActivity"
                       android:exported="true"
                       android:excludeFromRecents="true"
-                      android:theme="@android:style/Theme.DeviceDefault.Dialog">
+                      android:launchMode="singleTask">
                       <intent-filter>
                           <action android:name="android.intent.action.VIEW" />
                           <category android:name="android.intent.category.DEFAULT" />
@@ -58,18 +60,20 @@ jobs:
               android:layout_width="match_parent"
               android:layout_height="wrap_content"
               android:padding="30dp"
-              android:gravity="center">
+              android:gravity="center"
+              android:background="#222222">
               <ProgressBar android:layout_width="wrap_content" android:layout_height="wrap_content" />
               <TextView android:id="@+id/status"
                   android:layout_width="wrap_content"
                   android:layout_height="wrap_content"
-                  android:text="Resolving Link..."
+                  android:text="Resolving Secure Link..."
+                  android:textColor="#FFFFFF"
                   android:textSize="18sp"
                   android:paddingTop="20dp" />
           </LinearLayout>
           EOF
 
-      - name: Generate Resolver Logic (Java)
+      - name: Generate Resolver Logic (Clean Intent)
         run: |
           cat << 'EOF' > android-tv-app/app/src/main/java/com/mediaflow/resolver/MainActivity.java
           package com.mediaflow.resolver;
@@ -94,16 +98,13 @@ jobs:
                           try {
                               String currentUrl = startUrl;
                               boolean resolving = true;
-                              int maxRedirects = 5;
                               int count = 0;
                               
-                              while (resolving && count < maxRedirects) {
+                              while (resolving && count < 8) {
                                   HttpURLConnection conn = (HttpURLConnection) new URL(currentUrl).openConnection();
                                   conn.setInstanceFollowRedirects(false);
                                   conn.setRequestMethod("HEAD");
                                   conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
-                                  conn.setConnectTimeout(5000);
-                                  conn.setReadTimeout(5000);
                                   conn.connect();
                                   
                                   int status = conn.getResponseCode();
@@ -111,22 +112,27 @@ jobs:
                                       String location = conn.getHeaderField("Location");
                                       if (location != null) { currentUrl = location; } 
                                       else { resolving = false; }
-                                  } else {
-                                      resolving = false;
-                                  }
+                                  } else { resolving = false; }
                                   conn.disconnect();
                                   count++;
                               }
 
                               final String finalUrl = currentUrl;
                               runOnUiThread(() -> {
+                                  // BUILD THE CLEAN INTENT
                                   Intent playIntent = new Intent(Intent.ACTION_VIEW);
                                   playIntent.setDataAndType(Uri.parse(finalUrl), "video/*");
-                                  playIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                                   
-                                  Intent chooserIntent = Intent.createChooser(playIntent, "Open Clean Link With...");
-                                  chooserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                                  startActivity(chooserIntent);
+                                  // Categories help the system filter out non-viewer activities
+                                  playIntent.addCategory(Intent.CATEGORY_DEFAULT);
+                                  playIntent.addCategory(Intent.CATEGORY_BROWSABLE);
+                                  
+                                  // Clean title for the player
+                                  playIntent.putExtra("title", "MediaFlow Stream");
+                                  
+                                  Intent chooser = Intent.createChooser(playIntent, "Select Video Player");
+                                  chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                  startActivity(chooser);
                                   finish();
                               });
                           } catch (Exception e) {
@@ -143,34 +149,19 @@ jobs:
       - name: Build Gradle Configuration
         run: |
           cat << 'EOF' > android-tv-app/settings.gradle
-          pluginManagement {
-              repositories {
-                  google()
-                  mavenCentral()
-                  gradlePluginPortal()
-              }
-          }
-          dependencyResolutionManagement {
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { 
               repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories {
-                  google()
-                  mavenCentral()
-              }
+              repositories { google(); mavenCentral() } 
           }
           rootProject.name = "MediaFlowResolver"
           include ':app'
           EOF
-          
           cat << 'EOF' > android-tv-app/build.gradle
-          plugins {
-              id 'com.android.application' version '8.2.0' apply false
-          }
+          plugins { id 'com.android.application' version '8.2.0' apply false }
           EOF
-          
           cat << 'EOF' > android-tv-app/app/build.gradle
-          plugins {
-              id 'com.android.application'
-          }
+          plugins { id 'com.android.application' }
           android {
               namespace 'com.mediaflow.resolver'
               compileSdk 34
@@ -178,8 +169,8 @@ jobs:
                   applicationId "com.mediaflow.resolver"
                   minSdk 26
                   targetSdk 34
-                  versionCode 1
-                  versionName "1.0"
+                  versionCode 2
+                  versionName "1.1"
               }
           }
           EOF
@@ -190,8 +181,8 @@ jobs:
           gradle wrapper --gradle-version 8.4
           ./gradlew assembleDebug
 
-      - name: Upload Stub Resolver APK
+      - name: Upload Clean Resolver APK
         uses: actions/upload-artifact@v4
         with:
-          name: MediaFlow-Stub-Resolver
+          name: MediaFlow-Clean-Resolver
           path: android-tv-app/app/build/outputs/apk/debug/app-debug.apk
