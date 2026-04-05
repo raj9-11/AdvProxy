@@ -29,6 +29,14 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      # --- THE OPENSSL FIX ---
+      - name: Fix OpenSSL Cross-Compilation for Android
+        run: |
+          cd rust-backend
+          # Forces the Rust compiler to build OpenSSL from source for the Android architecture
+          cargo add openssl --features vendored
+      # -----------------------
+
       - name: Compile Rust Binary for Android Architectures
         run: |
           cd rust-backend
@@ -100,7 +108,6 @@ jobs:
                   String port = intent.getStringExtra("port");
                   String pass = intent.getStringExtra("password");
                   
-                  // Create a notification to keep the process alive in Android's RAM
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                       NotificationChannel channel = new NotificationChannel("proxy_channel", "MediaFlow Proxy Service", NotificationManager.IMPORTANCE_LOW);
                       getSystemService(NotificationManager.class).createNotificationChannel(channel);
@@ -112,13 +119,11 @@ jobs:
                       startForeground(1, notif);
                   }
 
-                  // Execute the Rust binary in a separate thread
                   new Thread(() -> {
                       try {
                           File binFile = new File(getFilesDir(), "mediaflow-proxy-light");
                           ProcessBuilder pb = new ProcessBuilder(binFile.getAbsolutePath());
                           
-                          // Inject settings via environment variables
                           pb.environment().put("PORT", port);
                           pb.environment().put("API_PASSWORD", pass);
                           
@@ -167,7 +172,6 @@ jobs:
                   
                   SharedPreferences prefs = getSharedPreferences("MediaFlowPrefs", MODE_PRIVATE);
                   
-                  // Build a simple D-Pad friendly TV Interface programmatically
                   LinearLayout layout = new LinearLayout(this);
                   layout.setOrientation(LinearLayout.VERTICAL);
                   layout.setPadding(60, 60, 60, 60);
@@ -204,7 +208,6 @@ jobs:
                       prefs.edit().putString("port", portInput.getText().toString())
                                   .putString("password", passInput.getText().toString()).apply();
                                   
-                      // Extract the pre-compiled Rust binary from assets to executable storage
                       try {
                           String arch = Build.SUPPORTED_ABIS[0];
                           String assetFolder = arch.contains("arm64") ? "arm64-v8a" : "armeabi-v7a";
@@ -223,7 +226,6 @@ jobs:
                           return;
                       }
 
-                      // Launch the Foreground Service
                       Intent serviceIntent = new Intent(MainActivity.this, ProxyService.class);
                       serviceIntent.putExtra("port", portInput.getText().toString());
                       serviceIntent.putExtra("password", passInput.getText().toString());
