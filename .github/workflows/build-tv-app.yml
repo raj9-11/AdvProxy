@@ -29,14 +29,21 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      # --- THE BULLETPROOF OPENSSL FIX ---
       - name: Fix OpenSSL Cross-Compilation for Android
         run: |
           cd rust-backend
-          # Bypass 'cargo add' and forcefully inject the latest vendored feature directly into the config
+          
+          # 1. Scrub the Cargo.toml of any existing openssl entries to prevent the duplicate key error
+          sed -i '/^openssl[[:space:]]*=/d' Cargo.toml
+          sed -i '/^\[dependencies\.openssl\]/d' Cargo.toml
+          
+          # 2. Safely append the vendored feature to force Android C-compilation
           echo '' >> Cargo.toml
           echo '[dependencies.openssl]' >> Cargo.toml
-          echo 'version = "0.10.64"' >> Cargo.toml
+          echo 'version = "*"' >> Cargo.toml
           echo 'features = ["vendored"]' >> Cargo.toml
+      # -----------------------------------
 
       - name: Compile Rust Binary for Android Architectures
         run: |
