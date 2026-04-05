@@ -1,4 +1,4 @@
-name: Build MediaFlow Stub Resolver
+name: Build MediaFlow Stub Resolver (Fixed Gradle)
 
 on:
   workflow_dispatch:
@@ -33,7 +33,8 @@ jobs:
                   
                   <activity android:name=".MainActivity"
                       android:exported="true"
-                      android:excludeFromRecents="true">
+                      android:excludeFromRecents="true"
+                      android:theme="@android:style/Theme.DeviceDefault.Dialog">
                       <intent-filter>
                           <action android:name="android.intent.action.VIEW" />
                           <category android:name="android.intent.category.DEFAULT" />
@@ -93,13 +94,16 @@ jobs:
                           try {
                               String currentUrl = startUrl;
                               boolean resolving = true;
+                              int maxRedirects = 5;
+                              int count = 0;
                               
-                              // THE RESOLVER LOOP: Follows redirects until it hits the final file
-                              while (resolving) {
+                              while (resolving && count < maxRedirects) {
                                   HttpURLConnection conn = (HttpURLConnection) new URL(currentUrl).openConnection();
-                                  conn.setInstanceFollowRedirects(false); // We want to see the "Location" header
+                                  conn.setInstanceFollowRedirects(false);
                                   conn.setRequestMethod("HEAD");
                                   conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+                                  conn.setConnectTimeout(5000);
+                                  conn.setReadTimeout(5000);
                                   conn.connect();
                                   
                                   int status = conn.getResponseCode();
@@ -111,13 +115,18 @@ jobs:
                                       resolving = false;
                                   }
                                   conn.disconnect();
+                                  count++;
                               }
 
                               final String finalUrl = currentUrl;
                               runOnUiThread(() -> {
                                   Intent playIntent = new Intent(Intent.ACTION_VIEW);
                                   playIntent.setDataAndType(Uri.parse(finalUrl), "video/*");
-                                  startActivity(Intent.createChooser(playIntent, "Open Clean Link With..."));
+                                  playIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                  
+                                  Intent chooserIntent = Intent.createChooser(playIntent, "Open Clean Link With...");
+                                  chooserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                  startActivity(chooserIntent);
                                   finish();
                               });
                           } catch (Exception e) {
@@ -131,20 +140,47 @@ jobs:
           }
           EOF
 
-      - name: Build Gradle
+      - name: Build Gradle Configuration
         run: |
-          cat << 'EOF' > android-tv-app/build.gradle
-          plugins { id 'com.android.application' version '8.2.0' apply false }
-          EOF
           cat << 'EOF' > android-tv-app/settings.gradle
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "MediaFlowResolver"
           include ':app'
           EOF
+          
+          cat << 'EOF' > android-tv-app/build.gradle
+          plugins {
+              id 'com.android.application' version '8.2.0' apply false
+          }
+          EOF
+          
           cat << 'EOF' > android-tv-app/app/build.gradle
-          plugins { id 'com.android.application' }
+          plugins {
+              id 'com.android.application'
+          }
           android {
               namespace 'com.mediaflow.resolver'
               compileSdk 34
-              defaultConfig { applicationId "com.mediaflow.resolver"; minSdk 26; targetSdk 34; versionCode 1; versionName "1.0" }
+              defaultConfig {
+                  applicationId "com.mediaflow.resolver"
+                  minSdk 26
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
           }
           EOF
 
