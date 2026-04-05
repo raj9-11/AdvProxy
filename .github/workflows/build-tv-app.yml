@@ -63,14 +63,15 @@ jobs:
               <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
               
               <application
+                  android:usesCleartextTraffic="true"
                   android:allowBackup="true"
                   android:label="MediaFlow Proxy"
                   android:theme="@android:style/Theme.DeviceDefault">
                   
                   <activity android:name=".MainActivity"
                       android:exported="true"
-                      android:banner="@android:drawable/ic_dialog_info"
-                      android:icon="@android:drawable/ic_dialog_info">
+                      android:banner="@android:drawable/sym_def_app_icon"
+                      android:icon="@android:drawable/sym_def_app_icon">
                       
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
@@ -108,7 +109,7 @@ jobs:
           import android.app.NotificationManager;
 
           public class ProxyService extends Service {
-              private Process proxyProcess;
+              private static Process proxyProcess;
 
               @Override
               public int onStartCommand(Intent intent, int flags, int startId) {
@@ -121,25 +122,26 @@ jobs:
                       Notification notif = new Notification.Builder(this, "proxy_channel")
                               .setContentTitle("MediaFlow Proxy")
                               .setContentText("Running in background on port " + port)
-                              .setSmallIcon(android.R.drawable.ic_dialog_info)
+                              .setSmallIcon(android.R.drawable.sym_def_app_icon)
                               .build();
                       startForeground(1, notif);
                   }
 
-                  new Thread(() -> {
-                      try {
-                          File binFile = new File(getFilesDir(), "mediaflow-proxy-light");
-                          ProcessBuilder pb = new ProcessBuilder(binFile.getAbsolutePath());
-                          
-                          pb.environment().put("PORT", port);
-                          pb.environment().put("API_PASSWORD", pass);
-                          
-                          proxyProcess = pb.start();
-                          proxyProcess.waitFor();
-                      } catch (Exception e) {
-                          e.printStackTrace();
-                      }
-                  }).start();
+                  // Prevents crashing if the service is already running
+                  if (proxyProcess == null || !proxyProcess.isAlive()) {
+                      new Thread(() -> {
+                          try {
+                              File binFile = new File(getFilesDir(), "mediaflow-proxy-light");
+                              ProcessBuilder pb = new ProcessBuilder(binFile.getAbsolutePath());
+                              pb.environment().put("PORT", port);
+                              pb.environment().put("API_PASSWORD", pass);
+                              proxyProcess = pb.start();
+                              proxyProcess.waitFor();
+                          } catch (Exception e) {
+                              e.printStackTrace();
+                          }
+                      }).start();
+                  }
                   
                   return START_STICKY;
               }
@@ -176,6 +178,21 @@ jobs:
           import java.net.URLEncoder;
 
           public class MainActivity extends Activity {
+              
+              private void extractBinary() throws Exception {
+                  String arch = Build.SUPPORTED_ABIS[0];
+                  String assetFolder = arch.contains("arm64") ? "arm64-v8a" : "armeabi-v7a";
+                  File binFile = new File(getFilesDir(), "mediaflow-proxy-light");
+                  if (!binFile.exists() || binFile.length() == 0) {
+                      InputStream is = getAssets().open(assetFolder + "/mediaflow-proxy-light");
+                      FileOutputStream fos = new FileOutputStream(binFile);
+                      byte[] buffer = new byte[1024]; int length;
+                      while ((length = is.read(buffer)) > 0) fos.write(buffer, 0, length);
+                      fos.close(); is.close();
+                      binFile.setExecutable(true);
+                  }
+              }
+
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
@@ -189,7 +206,8 @@ jobs:
                       String pass = prefs.getString("password", "1234");
                       
                       try {
-                          // Force the proxy to stay awake
+                          extractBinary();
+                          
                           Intent serviceIntent = new Intent(this, ProxyService.class);
                           serviceIntent.putExtra("port", port);
                           serviceIntent.putExtra("password", pass);
@@ -199,35 +217,39 @@ jobs:
                               startService(serviceIntent);
                           }
 
-                          // URL Encode the link and wrap it in the proxy URL
+                          // Wait 1.5 seconds to let the proxy server fully boot up
+                          Thread.sleep(1500);
+
                           String encodedUrl = URLEncoder.encode(originalUrl, "UTF-8");
-                          String proxyUrl = "http://127.0.0.1:" + port + "/proxy/stream?d=" + encodedUrl + "&api_password=" + pass;
+                          // Added dummy .mkv extension to prevent players from panicking
+                          String proxyUrl = "http://127.0.0.1:" + port + "/proxy/stream?d=" + encodedUrl + "&api_password=" + pass + "&ext=video.mkv";
                           
-                          // Prepare the new Intent
                           Intent playIntent = new Intent(Intent.ACTION_VIEW);
                           playIntent.setDataAndType(Uri.parse(proxyUrl), "video/*");
-                          playIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
                           
-                          // Let Android ask the user which player to open
+                          // Force Clean Titles
+                          playIntent.putExtra("title", "MediaFlow Stream");
+                          playIntent.putExtra("android.intent.extra.TITLE", "MediaFlow Stream");
+                          
                           Intent chooserIntent = Intent.createChooser(playIntent, "Select Video Player");
+                          chooserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                           startActivity(chooserIntent);
                           
                       } catch (Exception e) {
                           Toast.makeText(this, "Failed to unwrap link", Toast.LENGTH_LONG).show();
                       }
                       
-                      finish(); // Close the invisible proxy screen immediately
+                      finish();
                       return;
                   }
                   // -----------------------------
 
-                  // --- STANDARD TV SETUP INTERFACE ---
                   LinearLayout layout = new LinearLayout(this);
                   layout.setOrientation(LinearLayout.VERTICAL);
                   layout.setPadding(60, 60, 60, 60);
                   
                   TextView title = new TextView(this);
-                  title.setText("MediaFlow Interceptor (Android TV)");
+                  title.setText("MediaFlow Interceptor");
                   title.setTextSize(26);
                   title.setPadding(0, 0, 0, 40);
                   layout.addView(title);
@@ -259,18 +281,7 @@ jobs:
                                   .putString("password", passInput.getText().toString()).apply();
                                   
                       try {
-                          String arch = Build.SUPPORTED_ABIS[0];
-                          String assetFolder = arch.contains("arm64") ? "arm64-v8a" : "armeabi-v7a";
-                          File binFile = new File(getFilesDir(), "mediaflow-proxy-light");
-                          
-                          if (!binFile.exists() || binFile.length() == 0) {
-                              InputStream is = getAssets().open(assetFolder + "/mediaflow-proxy-light");
-                              FileOutputStream fos = new FileOutputStream(binFile);
-                              byte[] buffer = new byte[1024]; int length;
-                              while ((length = is.read(buffer)) > 0) fos.write(buffer, 0, length);
-                              fos.close(); is.close();
-                              binFile.setExecutable(true);
-                          }
+                          extractBinary();
                       } catch(Exception e) {
                           status.setText("Extraction Error: " + e.getMessage());
                           return;
@@ -324,7 +335,7 @@ jobs:
               defaultConfig {
                   applicationId "com.mediaflow.proxy.tv"
                   minSdk 26
-                  targetSdk 34
+                  targetSdk 33
                   versionCode 1
                   versionName "1.0"
               }
